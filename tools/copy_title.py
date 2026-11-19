@@ -1,3 +1,10 @@
+# v5.7 (20 Nov 2026): PUSH SINKRON-ULANG — bila push ditolak karena main
+# bergerak (balapan penulis lain, non-fast-forward), robot mengambil HEAD
+# terbaru, membangun ulang commit di atasnya, lalu mencoba lagi. v5.6
+# mengulang commit yang sama 5x sehingga satu balapan = gagal total
+# (terbukti dari log run Actions 19 Nov 2026: baka-test, food-wars-2,
+# good-luck-girl, ground-control-to-psychoelectric-girl gagal di repo
+# sehat gara-gara ini).
 # v5.6 (5 Nov 2026): GERBANG SUBTITLE EN+ID ditegakkan — bila sumber hanya
 # memberi EN, sub ID DIBUAT dari EN memakai terjemahan luring Argos en_id
 # (model diunduh workflow ke ./argos-model; pola ongoing_lane). Episode
@@ -500,18 +507,27 @@ def splice(treeish, parts, leaf):
     entries.append({'mode': '040000', 'type': 'tree', 'sha': new_sub, 'name': head})
     return mktree(entries)
 
-def push_commit(new_root_tree, msg):
-    parent = HEAD_NOW['sha']
-    r = git('commit-tree', new_root_tree, '-p', parent, '-m', msg)
-    if r.returncode != 0:
-        log('commit-tree gagal'); sys.exit(4)
-    commit = r.stdout.strip()
+def push_commit(parts, leaf, msg):
+    """Commit+push dengan SINKRON-ULANG (v5.7): pohon akar dibangun ulang
+    dari HEAD terbaru pada SETIAP percobaan. Bila push ditolak karena main
+    bergerak (penulis lain menang balapan -> non-fast-forward), ambil HEAD
+    terbaru (fetch), bangun ulang commit di atasnya, coba lagi. v5.6
+    mengulang commit yang sama 5x -> satu balapan saja pasti gagal total."""
     for t in range(5):
+        root = splice(HEAD_NOW['sha'], parts, leaf)
+        r = git('commit-tree', root, '-p', HEAD_NOW['sha'], '-m', msg)
+        if r.returncode != 0:
+            log('commit-tree gagal'); sys.exit(4)
+        commit = r.stdout.strip()
         rp = git('push', 'origin', f'{commit}:refs/heads/main', check=False, timeout=1800)
         if rp.returncode == 0:
             HEAD_NOW['sha'] = commit
             return commit
         log(f'  push gagal (coba {t + 1}/5):', scrub(rp.stderr or '')[-200:])
+        git('fetch', 'origin', 'main', check=False, timeout=600)
+        r2 = git('rev-parse', 'FETCH_HEAD', check=False)
+        if r2.returncode == 0 and r2.stdout.strip():
+            HEAD_NOW['sha'] = r2.stdout.strip()
         time.sleep(20 * (t + 1))
     log('push gagal total'); sys.exit(4)
 
@@ -552,9 +568,9 @@ def push_episode(ep):
                 log('hash-object gagal', fn); sys.exit(4)
             acc[fn] = {'mode': '100644', 'type': 'blob', 'sha': r.stdout.strip(), 'name': fn}
         ep_tree = mktree(list(acc.values()))
-        root = splice(HEAD_NOW['sha'], [WID, f'ep{ep}'],
-                      {'mode': '040000', 'type': 'tree', 'sha': ep_tree})
-        commit = push_commit(root, f'{WID} episode {ep} (segmen HLS)')
+        commit = push_commit([WID, f'ep{ep}'],
+                             {'mode': '040000', 'type': 'tree', 'sha': ep_tree},
+                             f'{WID} episode {ep} (segmen HLS)')
         log(f'  ep{ep} ter-push potongan {bi + 1}/{len(batches)} ({commit[:7]})')
     shutil.rmtree(edir, ignore_errors=True)  # hemat disk runner
     return commit
@@ -569,9 +585,9 @@ def push_manifest(pin):
     if r.returncode != 0:
         log('hash-object manifest gagal'); sys.exit(4)
     blob = r.stdout.decode().strip()
-    root = splice(HEAD_NOW['sha'], ['manifests', f'{WID}.json'],
-                  {'mode': '100644', 'type': 'blob', 'sha': blob})
-    push_commit(root, f'manifest {WID}')
+    push_commit(['manifests', f'{WID}.json'],
+                {'mode': '100644', 'type': 'blob', 'sha': blob},
+                f'manifest {WID}')
     print('MANIFEST_PIN', pin, flush=True)
 
 def main():
