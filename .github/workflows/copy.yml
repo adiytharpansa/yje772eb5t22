@@ -10,7 +10,7 @@ on:
 permissions:
   contents: write
 concurrency:
-  group: copy-title
+  group: copy-title-${{ inputs.wid }}
   cancel-in-progress: false
 jobs:
   copy:
